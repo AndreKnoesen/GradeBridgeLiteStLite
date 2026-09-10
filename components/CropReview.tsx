@@ -3,6 +3,7 @@ import {
   AlertTriangle, Camera, Check, CheckCircle2, Flag, Image as ImageIcon, RefreshCw, Upload,
 } from 'lucide-react';
 import { CropRef, PageRef, StoredLayoutMap, StudentReview } from '../types';
+import { inAssignmentOrder } from '../services/layoutMap';
 
 /**
  * The review step, and it is the safety net.
@@ -50,10 +51,10 @@ const CropReview: React.FC<CropReviewProps> = ({
     window.matchMedia('(pointer: coarse)').matches);
 
   // Assignment order: page first, then down the page. The same order the
-  // student worked in and the same order the grader will read in.
-  const ordered = [...layout.rows].sort((a, b) =>
-    a.pageK - b.pageK || a.y0 - b.y0 || a.x0 - b.x0 ||
-    (a.regionId < b.regionId ? -1 : a.regionId > b.regionId ? 1 : 0));
+  // student worked in, the same order the grader will read in, and — since it
+  // is now the shared comparison rather than a third copy of it — the same
+  // order the completeness statement lists missing answers in.
+  const ordered = inAssignmentOrder(layout.rows);
 
   const reviewed = ordered.filter(r => crops[r.regionId]?.review === 'signed_off').length;
   const flagged = ordered.filter(r => crops[r.regionId]?.review === 'flagged').length;
