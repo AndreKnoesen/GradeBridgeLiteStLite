@@ -19,6 +19,10 @@ import { DEMO_ASSIGNMENT, DEMO_LOADED_MESSAGE } from './demoAssignment';
 import { AlertTriangle, Download, ChevronLeft, Info, X, Monitor, Smartphone, Save } from 'lucide-react';
 import { isEncoded, decryptJson, GB2_KEY_ERROR } from './cryptoService';
 import { BundleError, chooseLayoutSource, loadAssignmentBundle } from './services/assignmentBundle';
+import CompletenessGate from './components/CompletenessGate';
+import {
+  CompletenessNotice, completenessNotice, submissionCompleteness,
+} from './services/completeness';
 import { LayoutMapError, parseLayoutCsv } from './services/layoutMap';
 import { registerAndCropPage } from './services/pageCrops';
 import { initQrReader } from './services/qrDecode';
@@ -97,6 +101,15 @@ const App: React.FC = () => {
   // The same, for crop bitmaps, keyed by region_id.
   const [cropUrls, setCropUrls] = useState<Record<string, string>>({});
   const cropUrlsRef = useRef<Record<string, string>>({});
+
+  /**
+   * The shortfall the student has been shown but not yet answered, or null.
+   *
+   * State rather than a `window.confirm` return value: a suppressed confirm
+   * answers itself `false`, and this app must never mistake a browser's
+   * silence for a student declining to submit. See `CompletenessGate`.
+   */
+  const [shortfallGate, setShortfallGate] = useState<CompletenessNotice | null>(null);
 
   /** region_id currently being re-cut, so the review row can say so. */
   const [cropBusy, setCropBusy] = useState<string | null>(null);
@@ -428,6 +441,10 @@ const App: React.FC = () => {
   };
 
   const handleRemovePage = (id: string) => {
+    // GUARD DIRECTION (standing rule, `CLAUDE.md`): **destructive**, fails
+    // CLOSED, correct. A suppressed confirm returns false and the page is not
+    // removed — the student taps Remove and nothing happens, which is annoying
+    // and loses no work. Audit: `AUDIT_SS_CONFIRM_DIRECTION_2026-09-09.md`.
     if (!window.confirm("Remove this page? You can upload it again afterwards, but the answers cut from it will go with it.")) {
       return;
     }
@@ -569,6 +586,9 @@ const App: React.FC = () => {
         // of failing with a confusing parse error.
         const obj = decoded as { questionPool?: unknown; problems?: unknown };
         if (Array.isArray(obj?.questionPool) && !Array.isArray(obj?.problems)) {
+          // GUARD DIRECTION: **navigational**, fails CLOSED, correct. A
+          // suppressed confirm leaves the student here with the refusal
+          // message rather than opening the MQ app for them.
           if (window.confirm(
             "Wrong app for this file.\n\n" +
             "The file you loaded is an MQ (multiple-choice quiz) assignment, " +
@@ -628,6 +648,10 @@ const App: React.FC = () => {
         // Asked last, once the file is known to be one this app will accept:
         // nobody should be asked to discard their pages for a load that is
         // about to be refused.
+        // GUARD DIRECTION: **destructive** (it discards photographs), fails
+        // CLOSED, correct. A suppressed confirm refuses the load and keeps the
+        // pages. The student is stuck rather than robbed, and the status line
+        // above says the load did not happen.
         if (state.pages.length > 0 && !window.confirm(
           "Loading an assignment clears your current work, including the " +
           `${state.pages.length} page image${state.pages.length === 1 ? '' : 's'} you uploaded.\n\n` +
@@ -755,6 +779,11 @@ const App: React.FC = () => {
         const backupData = json as BackupData;
 
         // We need the assignment structure to render
+        // GUARD DIRECTION: **constructive** (restoring the student's answers),
+        // fails CLOSED. **This one is on the wrong side of the rule** — a
+        // suppressed confirm silently declines to restore a backup. Not urgent:
+        // the work is still in the file and the restore can be retried in a
+        // fresh tab. Audit item 4.
         if (!state.assignment && !window.confirm(
           "You haven't loaded an assignment file yet.\n\n" +
           "This backup might not display correctly without the original assignment structure.\n\n" +
@@ -766,6 +795,8 @@ const App: React.FC = () => {
 
         // Logic to verify course code match if assignment exists
         if (state.assignment && state.assignment.courseCode !== backupData.course_code) {
+          // GUARD DIRECTION: **constructive** (same restore), fails CLOSED.
+          // **Wrong side of the rule**, same as above. Audit item 5.
           if (!window.confirm(
             `Course code mismatch!\n\n` +
             `Backup is for: ${backupData.course_code}\n` +
@@ -831,6 +862,10 @@ const App: React.FC = () => {
   };
 
   const handleClearWork = () => {
+    // GUARD DIRECTION: **destructive**, fails CLOSED, correct — and this is the
+    // one place two confirms fire back to back with no user action between
+    // them, which is the most suppression-provoking sequence in the app. Its
+    // failure mode is that nothing is deleted, which is the safe end.
     if (window.confirm("Are you sure you want to clear all work? This cannot be undone.")) {
       if (window.confirm("Really delete everything? Type 'YES' to confirm if you are unsure, or just click OK.")) {
          localStorage.removeItem(STORAGE_KEY);
@@ -930,7 +965,13 @@ const App: React.FC = () => {
     }
   };
 
-  const handleDownloadForGradescope = async () => {
+  /**
+   * `acknowledgedShortfall` is a parameter of the INNER function, never of the
+   * handler bound to a button. Three call sites pass `handleDownloadForGradescope`
+   * directly as an `onClick`, and a positional boolean there would receive the
+   * click event — which is truthy, and would skip the gate for everyone.
+   */
+  const runSubmissionDownload = async (acknowledgedShortfall: boolean) => {
     if (!state.assignment) return;
     setPdfProgress({ active: true, phase: 'pdf', current: 0, total: 0 });
     setStatusMessage("Generating submission package...");
@@ -977,6 +1018,39 @@ const App: React.FC = () => {
       );
       const baseName = built.baseName;
 
+      // Phase 2a: say what is missing, BEFORE the file is written.
+      //
+      // The only statement the student used to get was the `alert` below, which
+      // fires after `downloadBlob` has already saved the file — by which point
+      // they may have closed the tab. A completeness statement there is too late
+      // to act on, so this one is here.
+      //
+      // Counted from the layout map, which has been in hand since the assignment
+      // loaded, and against `built.entries`, which is what the archive actually
+      // holds rather than what the crop record claims. See
+      // `services/completeness.ts` for why neither of those is the QR.
+      //
+      // **It informs and never blocks.** Going back downloads nothing and leaves
+      // every photograph, crop and sign-off exactly where it was; continuing
+      // builds the same bytes it would have built with no gate at all.
+      //
+      // **This is NOT a `window.confirm`, and that is the whole design.** A
+      // suppressed `confirm()` shows nothing, waits for nothing and returns
+      // `false`, which the previous version read as "the student cancelled" —
+      // so a student whose browser had begun ignoring dialogs tapped Download
+      // and got nothing at all, permanently. Downloading is a CONSTRUCTIVE
+      // action, so its guard must FAIL OPEN (standing rule, `CLAUDE.md`).
+      // Rendering the choice in the page is how it fails open: nothing outside
+      // the page can answer it, so there is no answer to mistake for consent.
+      const notice = completenessNotice(
+        submissionCompleteness(state.layout, state.crops, built.entries));
+      if (notice && !acknowledgedShortfall) {
+        setPdfProgress({ active: false, phase: 'pdf', current: 0, total: 0 });
+        setStatusMessage('');
+        setShortfallGate(notice);
+        return;
+      }
+
       const zipBlob = await built.zip.generateAsync({ type: 'blob', ...SUBMISSION_ZIP_OPTIONS });
 
       downloadBlob(zipBlob, `${baseName}.zip`);
@@ -987,7 +1061,17 @@ const App: React.FC = () => {
         `File: ${baseName}.zip\n\n` +
         `If your browser asks whether to download it, confirm. It saves wherever your ` +
         `browser puts downloads — the Files app on a phone, the Downloads folder on a computer.\n\n` +
-        `This ZIP contains your PDF and submission data.\n` +
+        // **A handwritten submission contains no PDF**, and this sentence told
+        // every handwritten student that it did. The decision not to build one
+        // is in `submissionPackage` — `PrintView` never receives the pages or
+        // the crops, so the PDF would be the blank question paper — and this
+        // line was written before that decision and never revisited. A student
+        // who goes looking for the PDF it promises finds page photographs and
+        // concludes the download went wrong.
+        (isHandwritten
+          ? `This ZIP contains your page photographs, the answers cut from ` +
+            `them, and your submission data.\n`
+          : `This ZIP contains your PDF and submission data.\n`) +
         `Upload the ZIP file to Gradescope to submit your assignment.\n\n` +
         `Check you have the file before you close this page.`
       );
@@ -1009,6 +1093,31 @@ const App: React.FC = () => {
     }
   };
 
+  /** What the buttons call. Zero-arg, so an event can never become the flag. */
+  const handleDownloadForGradescope = (): void => { void runSubmissionDownload(false); };
+
+  /**
+   * The student chose to hand in what they have.
+   *
+   * **The package is rebuilt rather than held.** Keeping the first build in a
+   * ref would be faster and would be wrong: the archive is what the check was
+   * computed against, and anything that changed while the gate was up would
+   * download stale. Rebuilding re-reads every crop, so what is written is what
+   * exists at the moment of the download. The acknowledgement is passed for
+   * this one run and never stored, so a shortfall that appears between the two
+   * builds still gates.
+   */
+  const handleDownloadAnyway = (): void => {
+    setShortfallGate(null);
+    void runSubmissionDownload(true);
+  };
+
+  const handleGoBackToAnswers = (): void => {
+    setShortfallGate(null);
+    setStatusMessage('Nothing was downloaded — your work is all still here.');
+    setTimeout(() => setStatusMessage(''), 8000);
+  };
+
   const acceptPrivacy = () => {
     localStorage.setItem(PRIVACY_KEY, 'true');
     setState(s => ({ ...s, privacyAcknowledged: true }));
@@ -1022,6 +1131,15 @@ const App: React.FC = () => {
   // the page uploader — to zero height on phones.
   return (
     <div className="flex min-h-screen flex-col bg-gray-50 font-sans lg:h-screen lg:flex-row lg:overflow-hidden">
+
+      {/* The completeness gate. In the page, never a dialog — see the component. */}
+      {shortfallGate && (
+        <CompletenessGate
+          notice={shortfallGate}
+          onDownloadAnyway={handleDownloadAnyway}
+          onGoBack={handleGoBackToAnswers}
+        />
+      )}
 
       {/* Submission Generation Overlay */}
       {pdfProgress.active && (

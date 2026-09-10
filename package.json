@@ -9,7 +9,7 @@
     "milestone:zero": "node tests/milestone-zero.mjs",
     "full:assignment": "node tests/full-assignment.mjs",
     "captures": "node --input-type=module -e \"import { writeCaptures } from './tests/captureSet.mjs'; await writeCaptures();\"",
-    "test": "node tests/no-personal-names.mjs && node tests/no-process-records.mjs && node tests/spec-matches-code.mjs && node tests/run-tests.mjs && node tests/orientation-tests.mjs && node tests/download-tests.mjs && node tests/math-delimiter-tests.mjs && node tests/figure-tests.mjs && node tests/ai-feedback-tests.mjs && node tests/legacy-type-tests.mjs && node tests/registration-tests.mjs && node tests/embedded-layout-tests.mjs && node tests/spec-identification-tests.mjs && node tests/package-encryption-tests.mjs && node tests/gate-tests.mjs && node tests/qr-decoder-tests.mjs && node tests/qr-corpus-tests.mjs && node tests/in-app-browser-tests.mjs",
+    "test": "node tests/no-personal-names.mjs && node tests/no-process-records.mjs && node tests/spec-matches-code.mjs && node tests/run-tests.mjs && node tests/orientation-tests.mjs && node tests/download-tests.mjs && node tests/math-delimiter-tests.mjs && node tests/figure-tests.mjs && node tests/ai-feedback-tests.mjs && node tests/legacy-type-tests.mjs && node tests/registration-tests.mjs && node tests/embedded-layout-tests.mjs && node tests/spec-identification-tests.mjs && node tests/package-encryption-tests.mjs && node tests/completeness-tests.mjs && node tests/gate-tests.mjs && node tests/qr-decoder-tests.mjs && node tests/qr-corpus-tests.mjs && node tests/in-app-browser-tests.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "predeploy": "node scripts/check-ci-green.mjs && npm run build",

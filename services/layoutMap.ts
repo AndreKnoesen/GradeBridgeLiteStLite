@@ -168,8 +168,30 @@ export const parseLayoutCsv = async (text: string, sourceName = 'layout.csv'): P
 export const rowsForPage = (map: LayoutMap, pageK: number): LayoutRow[] =>
   map.rows.filter(r => r.pageK === pageK);
 
-/** Assignment order: page first, then down the page, then across. */
-export const rowsInAssignmentOrder = (map: LayoutMap): LayoutRow[] =>
-  [...map.rows].sort((a, b) =>
+/**
+ * The least a row needs to be put in assignment order. Declared so the order
+ * can be applied to `StoredLayoutMap` rows too — the autosaved, plain-JSON
+ * shape in `types.ts` — without either side having to restate the comparison.
+ */
+export interface OrderableRegion {
+  regionId: string;
+  pageK: number;
+  x0: number;
+  y0: number;
+}
+
+/**
+ * Assignment order: page first, then down the page, then across.
+ *
+ * **One comparison, not several.** The same sort is what `CropReview` shows the
+ * student, what the crop record is keyed in, and what the completeness check
+ * lists missing answers in; three copies of a tie-break rule is three chances
+ * for a student to be shown one order and told about another.
+ */
+export const inAssignmentOrder = <T extends OrderableRegion>(rows: readonly T[]): T[] =>
+  [...rows].sort((a, b) =>
     a.pageK - b.pageK || a.y0 - b.y0 || a.x0 - b.x0 ||
     (a.regionId < b.regionId ? -1 : a.regionId > b.regionId ? 1 : 0));
+
+export const rowsInAssignmentOrder = (map: LayoutMap): LayoutRow[] =>
+  inAssignmentOrder(map.rows);
