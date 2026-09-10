@@ -312,6 +312,41 @@ console.log('\n  6. wiring');
       'the dialog is not conditional on there being a shortfall'));
 }
 
+// =====================================================
+// 7. The dialog describes the ZIP the student actually has
+// =====================================================
+// The adjacent defect in the same dialog: it told EVERY student the archive
+// contains a PDF, and a handwritten submission carries none by design
+// (`submissionPackage`, 2026-09-01 — `PrintView` never receives the pages or
+// the crops, so the PDF would be the blank question paper). Same class of thing
+// as the check above: the app stating something untrue about what the student
+// is holding.
+console.log('\n  7. the ZIP is described truthfully');
+
+{
+  const app = readFileSync(join(REPO, 'App.tsx'), 'utf8');
+  const alertAt = app.indexOf('Submission package created.');
+  const alertEnd = app.indexOf('Check you have the file before you close this page.', alertAt);
+  const body = app.slice(alertAt, alertEnd);
+
+  check('the completed-download dialog branches on the input mode', () =>
+    assert(/isHandwritten[\s\S]{0,400}?This ZIP contains/.test(body),
+      'the dialog still describes one archive for both submission paths'));
+
+  check('the handwritten branch does not claim a PDF', () => {
+    const arm = /\?([\s\S]*?):/.exec(body);
+    assert(arm, `no conditional arm found in the dialog:\n${body}`);
+    assert(!/PDF/.test(arm[1]),
+      `the handwritten branch still promises a PDF:\n${arm[1]}`);
+    assert(/page photographs/.test(arm[1]),
+      `the handwritten branch does not say what the archive holds:\n${arm[1]}`);
+  });
+
+  check('the electronic branch still names the PDF it really carries', () =>
+    assert(/:\s*`This ZIP contains your PDF and submission data\./.test(body),
+      'the electronic dialog stopped naming its PDF'));
+}
+
 console.log(results.join('\n'));
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

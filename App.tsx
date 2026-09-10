@@ -1017,7 +1017,17 @@ const App: React.FC = () => {
         `File: ${baseName}.zip\n\n` +
         `If your browser asks whether to download it, confirm. It saves wherever your ` +
         `browser puts downloads — the Files app on a phone, the Downloads folder on a computer.\n\n` +
-        `This ZIP contains your PDF and submission data.\n` +
+        // **A handwritten submission contains no PDF**, and this sentence told
+        // every handwritten student that it did. The decision not to build one
+        // is in `submissionPackage` — `PrintView` never receives the pages or
+        // the crops, so the PDF would be the blank question paper — and this
+        // line was written before that decision and never revisited. A student
+        // who goes looking for the PDF it promises finds page photographs and
+        // concludes the download went wrong.
+        (isHandwritten
+          ? `This ZIP contains your page photographs, the answers cut from ` +
+            `them, and your submission data.\n`
+          : `This ZIP contains your PDF and submission data.\n`) +
         `Upload the ZIP file to Gradescope to submit your assignment.\n\n` +
         `Check you have the file before you close this page.`
       );
