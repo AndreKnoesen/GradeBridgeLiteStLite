@@ -25,6 +25,9 @@
 // is the one that matters most: ninety seconds after a push there is nothing to
 // find, and a commit that was never pushed has no run and never will. **Silence
 // is not success.**
+//
+// It refuses on all of those the same way. It does NOT report them the same
+// way — see "three ways to see nothing" below, added 2026-09-09.
 import { execFileSync } from 'node:child_process';
 
 const OVERRIDE = 'GB_ALLOW_RED_CI';
@@ -79,11 +82,116 @@ const refuse = (reason, extra = []) => {
   process.exit(1);
 };
 
-const sha = git('rev-parse', 'HEAD');
-const short = sha.slice(0, 7);
-const repo = slug();
+// ---------------------------------------------------------------------------
+// THREE WAYS TO SEE NOTHING, AND THEY ARE NOT THE SAME EVENT
+// ---------------------------------------------------------------------------
+// This gate refuses on all of them. It must still SAY WHICH ONE it hit.
+//
+//   1. a well-formed empty result — the query was valid, the API answered it,
+//      and there genuinely is no run. The commit is unpushed, or too new.
+//   2. a malformed request — we asked a question the API cannot answer, and it
+//      answered the question we actually asked. Nothing is wrong with the world.
+//   3. a transport or API failure — we could not ask at all.
+//
+// **Collapsing these lets a typo impersonate a fact.** On 2026-09-09, while
+// reconstructing state after a crash, this endpoint was queried by hand with an
+// ABBREVIATED sha (`a57735d`). `head_sha` matches only the full 40 characters,
+// so it returned `total_count: 0` — a well-formed answer to a malformed
+// question. Read as case 1 that is "no CI run exists", the most serious thing
+// this gate reports. Run #22 existed and was green throughout.
+//
+// Nobody was harmed — the operator noticed and re-queried. But an absence you
+// manufactured yourself is the exact evidence someone cites to argue this gate
+// is too brittle and should fail open, at which point the same typo publishes
+// an unverified build and reports success. So:
+//
+//   - the REQUEST is validated before it is sent (case 2 cannot reach case 1);
+//   - the RESPONSE is validated before it is read (a body of an unexpected
+//     shape is not an empty list — `?? []` used to make it one);
+//   - a real empty result SAYS it is real, so the next person debugs their
+//     query only when the query is what is broken.
+//
+// See CLAUDE.md, "guards fail by the direction of the action and the recourse
+// of the refused" — this gate fails CLOSED because its operator is at a
+// terminal, is told why, and holds GB_ALLOW_RED_CI.
+
+/** A full commit sha, which is the only thing `head_sha` will match. */
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/** Enough keys to recognise what came back, never the whole object. */
+const summariseKeys = (obj) => {
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return '(none)';
+  const shown = keys.slice(0, 8).join(', ');
+  return keys.length > 8 ? `${shown}, … (${keys.length} in all)` : shown;
+};
+
+// Reading HEAD and the remote can fail too — outside a work tree, or with a
+// broken remote. That is a failure to LOOK like any other, and it must refuse
+// **legibly**: an unhandled throw here exits non-zero, so the deploy is stopped
+// correctly, but it stops with a stack trace instead of a reason. A refusal the
+// operator cannot read is a refusal they cannot act on, and acting on it is the
+// whole basis for this gate being allowed to fail closed.
+let sha;
+let short;
+let repo;
+try {
+  sha = git('rev-parse', 'HEAD');
+  short = sha.slice(0, 7);
+  repo = slug();
+} catch (err) {
+  refuse('could not read the local repository to work out what to check.', [
+    String(err?.message ?? err).split('\n')[0],
+    'This is a defect in the environment, not a verdict about CI.',
+  ]);
+}
+
+// --- case 2, caught before it can masquerade as case 1 ---------------------
+// `git rev-parse HEAD` returns 40 characters, so this cannot fire today. It is
+// here for the edit that shortens it, which is precisely what happened by hand.
+if (!FULL_SHA.test(sha)) {
+  refuse('the CI query would be malformed, so its answer cannot be trusted.', [
+    `head_sha must be a full 40-character sha; got ${sha.length}: ${sha}`,
+    'The API matches head_sha only in full. An abbreviated sha returns',
+    'total_count: 0 — a well-formed answer to a malformed question, which is',
+    'indistinguishable from "this commit has no run" unless it is caught here.',
+    'This is a defect in the gate, not a verdict about CI.',
+  ]);
+}
+
+if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+  refuse('the repository slug is malformed, so the CI query cannot be trusted.', [
+    `derived ${repo} from the origin remote`,
+    'This is a defect in the gate, not a verdict about CI.',
+  ]);
+}
+
+/**
+ * Is this commit on the remote at all? Distinguishes "never pushed" from
+ * "pushed, run not created yet" — different actions for the operator.
+ *
+ * Reported as a HINT, never as a verdict: remote-tracking refs are only as
+ * fresh as the last fetch, so this can say "not found" about a commit that is
+ * on the remote. It narrows the search; it does not decide anything.
+ */
+const onRemoteHint = () => {
+  try {
+    // stderr ignored on purpose: an unknown sha makes git print "no such
+    // commit", and that line landing in the middle of a refusal reads like a
+    // second fault. The hint is optional; its failure must be silent.
+    const refs = execFileSync(
+      'git',
+      ['for-each-ref', '--contains', sha, '--format=%(refname)', 'refs/remotes/'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    ).trim();
+    return refs ? `local tracking refs place it on: ${refs.split('\n').join(', ')}` : null;
+  } catch {
+    return null; // old git, detached state, anything — the hint is optional
+  }
+};
 
 let runs;
+let totalCount;
 try {
   const res = await fetch(`${API}/repos/${repo}/actions/runs?head_sha=${sha}&per_page=20`, {
     headers: { 'User-Agent': 'gradebridge-deploy-gate', Accept: 'application/vnd.github+json' },
@@ -94,25 +202,80 @@ try {
     refuse('the GitHub API refused the request — rate limit, or forbidden.', [
       `HTTP ${res.status} for ${repo}`,
       reset ? `the rate limit resets at ${new Date(Number(reset) * 1000).toISOString()}` : '',
+      'This is a failure to LOOK, not a finding about CI.',
       'Refusing rather than passing: a gate that cannot see must not open.',
     ].filter(Boolean));
+  } else if (res.status === 404) {
+    refuse(`the GitHub API has no such repository or endpoint: ${repo}.`, [
+      'HTTP 404 — this is a malformed or misdirected query, not an absent run.',
+      'Check the origin remote. This is a defect in the gate, not a verdict about CI.',
+    ]);
   } else if (!res.ok) {
     refuse(`the GitHub API returned HTTP ${res.status} for ${repo}.`, [
+      'This is a failure to LOOK, not a finding about CI.',
       'Refusing rather than passing: a gate that cannot see must not open.',
     ]);
   }
-  runs = (await res.json()).workflow_runs ?? [];
+
+  // --- the response must be the shape we think it is ----------------------
+  // This used to read `(await res.json()).workflow_runs ?? []`, which turned any
+  // unexpected body — an error document, an HTML error page, a schema change —
+  // into an empty array, and therefore into "no CI run exists". A body we cannot
+  // read is case 3. It is not case 1.
+  let payload;
+  try {
+    payload = await res.json();
+  } catch (err) {
+    refuse('the GitHub API returned a body that is not JSON.', [
+      String(err?.message ?? err),
+      'This is a failure to READ the answer, not a finding about CI.',
+    ]);
+  }
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+    refuse('the GitHub API returned JSON of an unexpected shape.', [
+      `expected an object; got ${Array.isArray(payload) ? 'an array' : typeof payload}`,
+      'This is a failure to READ the answer, not a finding about CI.',
+    ]);
+  }
+  if (!Array.isArray(payload.workflow_runs)) {
+    refuse('the CI response carried no workflow_runs array.', [
+      // First few keys only: enough to recognise WHAT came back instead, without
+      // burying the reason under an eighty-key dump of a repository object.
+      `keys present: ${summariseKeys(payload)}`,
+      payload.message ? `the API said: ${payload.message}` : '',
+      'An unreadable answer is NOT an empty one. Refusing on that distinction:',
+      'this is a failure to READ the answer, not a finding about CI.',
+    ].filter(Boolean));
+  }
+  runs = payload.workflow_runs;
+  totalCount = payload.total_count;
+  // A page of 20 can legitimately under-report a larger total; the reverse
+  // cannot happen, and a non-numeric total means we are not reading what we think.
+  if (typeof totalCount !== 'number' || runs.length > totalCount) {
+    refuse('the CI response is internally inconsistent.', [
+      `total_count=${JSON.stringify(totalCount)} against ${runs.length} runs returned`,
+      'This is a failure to READ the answer, not a finding about CI.',
+    ]);
+  }
 } catch (err) {
   refuse('could not reach the GitHub API to check CI.', [
     String(err?.message ?? err),
+    'This is a failure to LOOK, not a finding about CI.',
     'Refusing rather than passing: a gate that cannot see must not open.',
   ]);
 }
 
+// --- case 1: a real absence, and it says so --------------------------------
 if (runs.length === 0) {
+  const hint = onRemoteHint();
   refuse(`no CI run exists for ${short}.`, [
     `repository ${repo}`,
-    'Either this commit has not been pushed, or its run has not been created yet.',
+    `The query was well-formed and the API answered it: total_count=${totalCount}.`,
+    'This is a REAL absence, not a failed lookup — do not go debugging the query.',
+    hint ?? 'local tracking refs do not place this commit on any remote branch',
+    hint
+      ? 'Either the run has not been created yet, or the workflow did not trigger.'
+      : 'It looks unpushed (tracking refs may be stale — fetch to be sure).',
     'Silence is not success — push, let the run finish, then deploy.',
   ]);
 }
