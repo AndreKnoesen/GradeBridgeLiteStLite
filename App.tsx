@@ -19,6 +19,7 @@ import { DEMO_ASSIGNMENT, DEMO_LOADED_MESSAGE } from './demoAssignment';
 import { AlertTriangle, Download, ChevronLeft, Info, X, Monitor, Smartphone, Save } from 'lucide-react';
 import { isEncoded, decryptJson, GB2_KEY_ERROR } from './cryptoService';
 import { BundleError, chooseLayoutSource, loadAssignmentBundle } from './services/assignmentBundle';
+import { completenessMessage, submissionCompleteness } from './services/completeness';
 import { LayoutMapError, parseLayoutCsv } from './services/layoutMap';
 import { registerAndCropPage } from './services/pageCrops';
 import { initQrReader } from './services/qrDecode';
@@ -976,6 +977,35 @@ const App: React.FC = () => {
         { pdfBytes, readBlob: getPageBlob, downsampleImage },
       );
       const baseName = built.baseName;
+
+      // Phase 2a: say what is missing, BEFORE the file is written.
+      //
+      // The only statement the student used to get was the `alert` below, which
+      // fires after `downloadBlob` has already saved the file — by which point
+      // they may have closed the tab. A completeness statement there is too late
+      // to act on, so this one is here.
+      //
+      // Counted from the layout map, which has been in hand since the assignment
+      // loaded, and against `built.entries`, which is what the archive actually
+      // holds rather than what the crop record claims. See
+      // `services/completeness.ts` for why neither of those is the QR.
+      //
+      // **It informs and never blocks.** Cancelling downloads nothing and leaves
+      // every photograph, crop and sign-off exactly where it was; continuing
+      // builds the same bytes it would have built with no dialog at all.
+      const shortfall = completenessMessage(
+        submissionCompleteness(state.layout, state.crops, built.entries));
+      if (shortfall) {
+        setPdfProgress({ active: false, phase: 'pdf', current: 0, total: 0 });
+        setStatusMessage('');
+        if (!window.confirm(shortfall)) {
+          setStatusMessage('Nothing was downloaded — add the missing answers and try again.');
+          setTimeout(() => setStatusMessage(''), 8000);
+          return;
+        }
+        setPdfProgress({ active: true, phase: 'packaging', current: 0, total: 0 });
+        setStatusMessage('Packaging submission...');
+      }
 
       const zipBlob = await built.zip.generateAsync({ type: 'blob', ...SUBMISSION_ZIP_OPTIONS });
 
