@@ -146,10 +146,33 @@ export const missingByPage = (missing: readonly MissingAnswer[]): string => {
 export const completenessMessage = (c: Completeness): string | null => {
   if (c.missing.length === 0) return null;
 
+  const answers = (n: number): string => `${n} ${n === 1 ? 'answer' : 'answers'}`;
+
+  // **An empty submission is its own sentence.**
+  //
+  // Itemising every part is noise when the answer is "all of them": the list
+  // makes a student read seventeen names to learn a fact one line already
+  // carries. And "if you left those blank on purpose" describes someone who
+  // made choices part by part — it does not fit someone who has done nothing,
+  // and offering it to them reads as an accusation of a decision they did not
+  // take.
+  //
+  // The list earns its place as soon as the submission is partly there, which
+  // is where the names and pages are what the student acts on.
+  if (c.present === 0) {
+    return (
+      `This assignment has ${answers(c.expected)}. ` +
+      (c.expected === 1
+        ? 'Your submission does not have it.'
+        : 'Your submission has none of them.') + '\n\n' +
+      `If that is deliberate, choose OK to download it anyway.\n` +
+      `Choose Cancel to go back and add your answers.`
+    );
+  }
+
   const shown = c.missing.slice(0, MISSING_NAMES_SHOWN);
   const rest = c.missing.length - shown.length;
   const list = missingByPage(shown) + (rest > 0 ? `, and ${rest} more` : '');
-  const answers = (n: number): string => `${n} ${n === 1 ? 'answer' : 'answers'}`;
 
   return (
     `This assignment has ${answers(c.expected)}. Your submission has ${c.present}.\n\n` +

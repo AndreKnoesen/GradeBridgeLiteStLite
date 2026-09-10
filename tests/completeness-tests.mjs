@@ -90,6 +90,60 @@ console.log('  1. no page registered, and the number is still known');
 }
 
 // =====================================================
+// 1b. An empty submission is its own sentence
+// =====================================================
+// Andre, 2026-09-09, having read the seventeen-missing case on screen: at zero
+// the itemised list is noise, and "if you left those blank on purpose" does not
+// describe someone who has done nothing. **The list earns its place at fourteen
+// of seventeen**, which is what section 4 covers.
+console.log('\n  1b. nothing captured at all');
+
+{
+  const msg = cmp.completenessMessage(cmp.submissionCompleteness(layout, {}, ['sub.json']));
+
+  check('nothing captured: no answer is itemised and no page is named', () => {
+    assert(!/Missing:/.test(msg), `the empty case still itemises:\n${msg}`);
+    assert(!/on page \d+/.test(msg), `the empty case still names pages:\n${msg}`);
+    for (const part of ['1(a)', '3(b)', '10']) {
+      assert(!msg.includes(part), `the empty case names "${part}":\n${msg}`);
+    }
+  });
+
+  check('nothing captured: it still states the total and that none of it is there', () => {
+    assert(/This assignment has 17 answers\./.test(msg), `no total in:\n${msg}`);
+    assert(/none of them/.test(msg), `it does not say none of them are there:\n${msg}`);
+  });
+
+  check('nothing captured: the wording does not assume part-by-part choices', () => {
+    assert(!/left those blank/i.test(msg),
+      `the empty case still offers the partial-submission wording:\n${msg}`);
+    assert(/If that is deliberate/.test(msg), `no wording that fits having done nothing:\n${msg}`);
+    assert(/choose OK/i.test(msg) && /Cancel/.test(msg),
+      `the empty case does not say what the buttons do:\n${msg}`);
+  });
+
+  // A one-region assignment: "none of them" is wrong for a single answer, and a
+  // sentence that is grammatically wrong is a sentence a student stops trusting.
+  const one = cmp.completenessMessage(cmp.submissionCompleteness(
+    { rows: [layout.rows[0]] }, {}, ['sub.json']));
+  check('nothing captured, one answer only: the sentence is singular', () => {
+    assert(/This assignment has 1 answer\./.test(one), `not singular:\n${one}`);
+    assert(/does not have it\./.test(one), `still says "none of them" for one answer:\n${one}`);
+  });
+
+  // The boundary. One answer captured is a partial submission, and a partial
+  // submission is exactly where the names and pages are worth reading.
+  const partial = cmp.completenessMessage(cmp.submissionCompleteness(
+    layout, allCrops, ['sub.json', cropFile('p1a')]));
+  check('one answer captured: the itemised list comes back', () => {
+    assert(/Missing: /.test(partial), `the list did not return at present=1:\n${partial}`);
+    assert(/on page \d+/.test(partial), `no pages named at present=1:\n${partial}`);
+    assert(/left those blank on purpose/.test(partial),
+      `the partial wording did not return at present=1:\n${partial}`);
+  });
+}
+
+// =====================================================
 // 2. A crop record with no bytes behind it is missing
 // =====================================================
 // The 2026-09-04 shape: the crop is named in the payload and absent from the
