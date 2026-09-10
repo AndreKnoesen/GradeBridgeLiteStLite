@@ -80,8 +80,8 @@ console.log('  1. no page registered, and the number is still known');
   check('no registration at all: every declared region is still expected', () =>
     assertEqual([c.expected, c.present, c.missing.length], [17, 0, 17],
       'the expectation collapsed when nothing had registered'));
-  check('no registration at all: the message is produced, not skipped', () =>
-    assert(cmp.completenessMessage(c) !== null,
+  check('no registration at all: the notice is produced, not skipped', () =>
+    assert(cmp.completenessNotice(c) !== null,
       'a submission with no answers at all produced no statement'));
   check('the count is the regions declared, not maxPageK and not a page count', () => {
     assert(layout.maxPageK === 16, `fixture maxPageK is ${layout.maxPageK}, expected 16`);
@@ -99,47 +99,48 @@ console.log('  1. no page registered, and the number is still known');
 console.log('\n  1b. nothing captured at all');
 
 {
-  const msg = cmp.completenessMessage(cmp.submissionCompleteness(layout, {}, ['sub.json']));
+  const n = cmp.completenessNotice(cmp.submissionCompleteness(layout, {}, ['sub.json']));
 
   check('nothing captured: no answer is itemised and no page is named', () => {
-    assert(!/Missing:/.test(msg), `the empty case still itemises:\n${msg}`);
-    assert(!/on page \d+/.test(msg), `the empty case still names pages:\n${msg}`);
-    for (const part of ['1(a)', '3(b)', '10']) {
-      assert(!msg.includes(part), `the empty case names "${part}":\n${msg}`);
+    assert(n.itemised === false, 'the empty case still asks to be itemised');
+    assertEqual(n.groups, [], 'the empty case still carries page groups');
+    const text = `${n.headline} ${n.choice}`;
+    for (const part of ['1(a)', '3(b)', 'page 8']) {
+      assert(!text.includes(part), `the empty case names "${part}": ${text}`);
     }
   });
 
   check('nothing captured: it still states the total and that none of it is there', () => {
-    assert(/This assignment has 17 answers\./.test(msg), `no total in:\n${msg}`);
-    assert(/none of them/.test(msg), `it does not say none of them are there:\n${msg}`);
+    assert(/This assignment has 17 answers\./.test(n.headline), `no total in: ${n.headline}`);
+    assert(/none of them/.test(n.headline), `it does not say none are there: ${n.headline}`);
   });
 
   check('nothing captured: the wording does not assume part-by-part choices', () => {
-    assert(!/left those blank/i.test(msg),
-      `the empty case still offers the partial-submission wording:\n${msg}`);
-    assert(/If that is deliberate/.test(msg), `no wording that fits having done nothing:\n${msg}`);
-    assert(/choose OK/i.test(msg) && /Cancel/.test(msg),
-      `the empty case does not say what the buttons do:\n${msg}`);
+    assert(!/left those blank/i.test(n.choice),
+      `the empty case still offers the partial wording: ${n.choice}`);
+    assert(/If that is deliberate/.test(n.choice),
+      `no wording that fits having done nothing: ${n.choice}`);
   });
 
   // A one-region assignment: "none of them" is wrong for a single answer, and a
   // sentence that is grammatically wrong is a sentence a student stops trusting.
-  const one = cmp.completenessMessage(cmp.submissionCompleteness(
+  const one = cmp.completenessNotice(cmp.submissionCompleteness(
     { rows: [layout.rows[0]] }, {}, ['sub.json']));
   check('nothing captured, one answer only: the sentence is singular', () => {
-    assert(/This assignment has 1 answer\./.test(one), `not singular:\n${one}`);
-    assert(/does not have it\./.test(one), `still says "none of them" for one answer:\n${one}`);
+    assert(/This assignment has 1 answer\./.test(one.headline), `not singular: ${one.headline}`);
+    assert(/does not have it\./.test(one.headline),
+      `still says "none of them" for one answer: ${one.headline}`);
   });
 
   // The boundary. One answer captured is a partial submission, and a partial
   // submission is exactly where the names and pages are worth reading.
-  const partial = cmp.completenessMessage(cmp.submissionCompleteness(
+  const partial = cmp.completenessNotice(cmp.submissionCompleteness(
     layout, allCrops, ['sub.json', cropFile('p1a')]));
   check('one answer captured: the itemised list comes back', () => {
-    assert(/Missing: /.test(partial), `the list did not return at present=1:\n${partial}`);
-    assert(/on page \d+/.test(partial), `no pages named at present=1:\n${partial}`);
-    assert(/left those blank on purpose/.test(partial),
-      `the partial wording did not return at present=1:\n${partial}`);
+    assert(partial.itemised === true, 'the list did not return at present=1');
+    assert(partial.groups.length > 0, 'no page groups at present=1');
+    assert(/left those blank on purpose/.test(partial.choice),
+      `the partial wording did not return at present=1: ${partial.choice}`);
   });
 }
 
@@ -173,82 +174,87 @@ console.log('\n  3. silence on the common path');
   check('complete: nothing is missing', () =>
     assertEqual([c.expected, c.present, c.missing], [17, 17, []],
       'a complete package reported a shortfall'));
-  check('complete: completenessMessage returns null — no dialog, no extra click', () =>
-    assert(cmp.completenessMessage(c) === null,
-      `a complete submission produced a message: ${cmp.completenessMessage(c)}`));
+  check('complete: completenessNotice returns null — no gate, no extra tap', () =>
+    assert(cmp.completenessNotice(c) === null,
+      `a complete submission produced a notice: ${JSON.stringify(cmp.completenessNotice(c))}`));
 }
 
 {
   // An electronic assignment has no map. It declares no regions, expects none,
-  // and must never see this dialog.
+  // and must never see this gate.
   const c = cmp.submissionCompleteness(null, {}, ['sub.json', 'x.pdf']);
   check('electronic (no layout map): nothing expected, nothing said', () => {
     assertEqual([c.expected, c.present, c.missing], [0, 0, []], 'a null map expected something');
-    assert(cmp.completenessMessage(c) === null,
-      'an electronic submission produced a shortfall dialog');
+    assert(cmp.completenessNotice(c) === null,
+      'an electronic submission produced a shortfall gate');
   });
 }
 
 // =====================================================
-// 4. What the message actually says
+// 4. What the notice actually carries
 // =====================================================
 // **The page numbers are the requirement, not decoration.** A student acts on
-// paper: "3(b)" alone sends them through sixteen sheets, "3(b) on page 8" sends
-// them to a sheet. Removing the pages from the message must fail here.
-console.log('\n  4. the message');
+// paper: "3(b)" alone sends them through sixteen sheets, "3(b)" under "Page 8"
+// sends them to a sheet. Dropping the pages from the notice must fail here.
+console.log('\n  4. the notice');
 
 {
   const gone = [cropFile('p3b'), cropFile('p3c'), cropFile('p7')];
   const c = cmp.submissionCompleteness(
     layout, allCrops, allEntries.filter(e => !gone.includes(e)));
-  const msg = cmp.completenessMessage(c);
+  const n = cmp.completenessNotice(c);
 
-  check('the message states both counts', () => {
-    assert(/This assignment has 17 answers\./.test(msg), `no expected count in:\n${msg}`);
-    assert(/Your submission has 14\./.test(msg), `no present count in:\n${msg}`);
+  check('the notice states both counts', () => {
+    assert(/This assignment has 17 answers\./.test(n.headline), `no expected count: ${n.headline}`);
+    assert(/Your submission has 14\./.test(n.headline), `no present count: ${n.headline}`);
   });
 
-  check('the message names the page each missing answer is on', () => {
-    for (const [part, page] of [['3(b)', 8], ['3(c)', 8], ['7', 12]]) {
-      assert(msg.includes(`page ${page}`), `"page ${page}" is not in the message:\n${msg}`);
-      assert(msg.includes(part), `"${part}" is not in the message:\n${msg}`);
-    }
-    // Named and paged, not merely both present somewhere: every clause of the
-    // list must end in the page its answers are on.
-    const line = /Missing: (.+)\./.exec(msg);
-    assert(line, `the message has no "Missing:" line:\n${msg}`);
-    for (const clause of line[1].split(/,\s*/)) {
-      if (/^and \d+ more$/.test(clause)) continue;
-      assert(/ on page \d+$/.test(clause),
-        `"${clause}" names answers without saying which page they are on`);
+  check('the notice carries the page each missing answer is on', () => {
+    assertEqual(n.groups, [
+      { pageK: 8, names: ['3(b)', '3(c)'] },
+      { pageK: 12, names: ['7'] },
+    ], 'the groups do not name each answer under its own page');
+    // Structural, not textual: every group must carry a real page number and at
+    // least one name, so a group that lost its page cannot render as a bare list.
+    for (const g of n.groups) {
+      assert(Number.isInteger(g.pageK) && g.pageK > 0,
+        `a group has no page number: ${JSON.stringify(g)}`);
+      assert(g.names.length > 0, `a group names no answers: ${JSON.stringify(g)}`);
     }
   });
 
-  check('answers on the same sheet are grouped under one page', () =>
-    assert(msg.includes('3(b) and 3(c) on page 8'),
-      `two answers on page 8 were not grouped:\n${msg}`));
+  check('answers on the same sheet are grouped under one page', () => {
+    assert(n.groups.length === 2, `${n.groups.length} groups for answers on 2 sheets`);
+    assertEqual(n.groups[0].names, ['3(b)', '3(c)'],
+      'two answers on page 8 were not grouped together');
+  });
 
-  check('continue is the plain path: OK downloads, Cancel goes back', () => {
-    assert(/choose OK to download/i.test(msg), `the message does not say OK continues:\n${msg}`);
-    assert(/Cancel to go back/i.test(msg), `the message does not say Cancel returns:\n${msg}`);
-    assert(!/(are you sure|warning|do not|must)/i.test(msg),
-      `the message pressures the student out of a legitimate choice:\n${msg}`);
+  check('continuing is a plain choice, not a warning', () => {
+    assert(/you can download anyway/i.test(n.choice),
+      `the notice does not offer downloading as a choice: ${n.choice}`);
+    const text = `${n.headline} ${n.choice}`;
+    assert(!/(are you sure|warning|do not|must)/i.test(text),
+      `the notice pressures the student out of a legitimate choice: ${text}`);
+    // The prose must not name browser buttons any more: it renders in the page,
+    // where there is no OK and no Cancel.
+    assert(!/\b(OK|Cancel)\b/.test(text),
+      `the notice still names browser dialog buttons: ${text}`);
   });
 }
 
 {
-  // Fourteen missing: the number matters more than the list, and a dialog
-  // nobody reads to the end is a dialog nobody reads.
+  // Fourteen missing. The dialog capped the list at six and said "and 8 more"
+  // because a dialog nobody can read to the end is a dialog nobody reads. **The
+  // gate scrolls, so the cap is gone** and every missing answer is simply there.
   const kept = layout.rows.slice(0, 3).map(r => cropFile(r.regionId));
   const c = cmp.submissionCompleteness(layout, allCrops, ['sub.json', ...kept]);
-  const msg = cmp.completenessMessage(c);
-  check('a long list is capped and says how many more', () => {
+  const n = cmp.completenessNotice(c);
+  check('a long list is complete — no cap, and nothing is elided', () => {
     assert(c.missing.length === 14, `${c.missing.length} missing, expected 14`);
-    const named = /Missing: (.+)\./.exec(msg)[1];
-    const shown = (named.match(/on page \d+/g) ?? []).length;
-    assert(shown <= cmp.MISSING_NAMES_SHOWN,
-      `${shown} page clauses in the message; the cap is ${cmp.MISSING_NAMES_SHOWN}`);
-    assert(/, and \d+ more$/.test(named), `the capped list does not say how many more:\n${msg}`);
+    const named = n.groups.flatMap(g => g.names);
+    assert(named.length === 14, `the notice names ${named.length} of 14 missing answers`);
+    const text = `${n.headline} ${n.choice}`;
+    assert(!/\d+ more/.test(text), `the notice still elides with "N more": ${text}`);
   });
 }
 
@@ -305,8 +311,8 @@ await checkAsync('a real package, complete: no statement is produced', async () 
   const built = await pkg.buildSubmissionPackage(sources(null),
     { readBlob: async () => jpegish(7, 600), downsampleImage: async (d) => d });
   const c = cmp.submissionCompleteness({ rows: REGIONS }, sources(null).crops, built.entries);
-  assert(cmp.completenessMessage(c) === null,
-    `a complete real package produced: ${cmp.completenessMessage(c)}`);
+  assert(cmp.completenessNotice(c) === null,
+    `a complete real package produced: ${JSON.stringify(cmp.completenessNotice(c))}`);
 });
 
 await checkAsync('a sealed archive: gb2 entry names still count as present', async () => {
@@ -327,22 +333,30 @@ await checkAsync('a sealed archive: gb2 entry names still count as present', asy
 });
 
 // =====================================================
-// 6. It is wired in, before the download
+// 6. It is wired in, before the download — and it is NOT a browser dialog
 // =====================================================
 // `App.tsx` cannot be imported here, so the wiring is asserted over the shipped
-// source. Removing the call, or moving it after `downloadBlob`, must fail here:
-// the pure functions above are worth nothing if nothing calls them, and an
-// uncalled guard is exactly what let 2026-09-04 pass in silence.
-console.log('\n  6. wiring');
+// source. Two things must fail here: removing the call, and putting the choice
+// back into a `window.confirm`.
+//
+// **Why the second matters more than it looks.** A suppressed `confirm()` shows
+// nothing, waits for nothing and returns `false` (HTML Standard: "If we cannot
+// show simple dialogs for this, then return false"; MDN: "if a browser is
+// ignoring in-page dialogs, then the returned value is always false"). The first
+// version of this guard read that `false` as "the student cancelled", so a
+// student whose browser had begun ignoring dialogs tapped Download and got
+// nothing at all — permanently, on the one path where the failure is a zero.
+// Downloading is CONSTRUCTIVE, so its guard must FAIL OPEN. See `CLAUDE.md`.
+console.log('\n  6. wiring, and no dialog on the download path');
 
 {
   const app = readFileSync(join(REPO, 'App.tsx'), 'utf8');
-  const handlerAt = app.indexOf('const handleDownloadForGradescope');
+  const handlerAt = app.indexOf('const runSubmissionDownload');
   check('App.tsx still has the submission handler', () =>
-    assert(handlerAt > 0, 'handleDownloadForGradescope not found'));
+    assert(handlerAt > 0, 'runSubmissionDownload not found'));
 
   const checkAt = app.indexOf('submissionCompleteness(', handlerAt);
-  const confirmAt = app.indexOf('window.confirm(', handlerAt);
+  const gateAt = app.indexOf('setShortfallGate(notice)', handlerAt);
   const downloadAt = app.indexOf('downloadBlob(zipBlob', handlerAt);
 
   check('the handler computes completeness from the map and the built entries', () => {
@@ -351,19 +365,100 @@ console.log('\n  6. wiring');
       'completeness is not computed from state.layout, state.crops and built.entries');
   });
 
-  check('the statement is put to the student before the file is written', () => {
-    assert(confirmAt > checkAt, 'nothing is put to the student after the check');
-    assert(downloadAt > confirmAt,
+  check('the choice is put to the student before the file is written', () => {
+    assert(gateAt > checkAt, 'nothing is put to the student after the check');
+    assert(downloadAt > gateAt,
       'the download happens before the student is asked — too late to act on');
   });
 
-  check('declining downloads nothing', () =>
-    assert(/if \(!window\.confirm\(shortfall\)\) \{[\s\S]{0,400}?return;/.test(app),
-      'cancelling does not return before the archive is generated'));
+  check('an unanswered shortfall downloads nothing', () =>
+    assert(/if \(notice && !acknowledgedShortfall\) \{[\s\S]{0,400}?return;/.test(app),
+      'the handler does not stop before the archive is generated'));
 
-  check('a complete submission reaches the download with no dialog', () =>
-    assert(/const shortfall = completenessMessage\([\s\S]{0,200}?\);\s*if \(shortfall\) \{/.test(app),
-      'the dialog is not conditional on there being a shortfall'));
+  check('a complete submission reaches the download with no gate', () =>
+    assert(/const notice = completenessNotice\([\s\S]{0,200}?\);\s*if \(notice && !acknowledgedShortfall\) \{/.test(app),
+      'the gate is not conditional on there being a shortfall'));
+
+  // **The anti-regression for the whole suppression finding.** Six other
+  // confirms remain in this file and are audited separately; the download path
+  // must carry none.
+  check('the download path calls no window.confirm at all', () => {
+    // Comments stripped first: this file explains at length why the dialog was
+    // removed, and a guard that its own rationale trips is a guard that gets
+    // deleted rather than understood.
+    const codeOnly = (src) => src.split(/\r?\n/)
+      .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n');
+    const path = codeOnly(app.slice(handlerAt, downloadAt > 0 ? downloadAt + 200 : app.length));
+    assert(!/window\.confirm\s*\(/.test(path),
+      'a window.confirm is back on the download path — a suppressed one returns ' +
+      'false and would silently refuse to download');
+  });
+
+  check('the gate is rendered in the page, not spoken by the browser', () => {
+    assert(/<CompletenessGate/.test(app), 'the gate component is not rendered');
+    assert(/onDownloadAnyway=\{handleDownloadAnyway\}/.test(app),
+      'the gate has no way to proceed to the download');
+    assert(/onGoBack=\{handleGoBackToAnswers\}/.test(app),
+      'the gate has no way back to the work');
+  });
+
+  // The acknowledgement is a parameter of the inner function only. Three call
+  // sites pass the handler straight to an onClick, and a positional boolean
+  // there would receive the click event — truthy — and skip the gate for
+  // everyone.
+  check('the button handler takes no argument that an event could fill', () =>
+    assert(/const handleDownloadForGradescope = \(\): void =>/.test(app),
+      'the click handler takes a parameter; an event would be passed as the flag'));
+
+  check('proceeding rebuilds rather than reusing the first package', () =>
+    assert(/handleDownloadAnyway = \(\): void => \{[\s\S]{0,200}?runSubmissionDownload\(true\)/.test(app),
+      'Download anyway does not re-run the build, so it could write a stale archive'));
+}
+
+// =====================================================
+// 6b. The gate itself
+// =====================================================
+// Asserted over the component source for the same reason as above: it cannot be
+// imported here. These are the three properties a `window.confirm` could not
+// have given us, plus the one it gave for free that must not be lost.
+console.log('\n  6b. the gate');
+
+{
+  const gate = readFileSync(join(REPO, 'components/CompletenessGate.tsx'), 'utf8');
+
+  check('nothing is default-activated — the heading takes focus, not a button', () => {
+    assert(/headingRef\.current\?\.focus\(\)/.test(gate),
+      'the gate does not move focus to its heading');
+    assert(!/autoFocus/.test(gate),
+      'a control is autofocused; Enter must not be able to answer this');
+  });
+
+  check('both choices are present and both are full buttons', () => {
+    assert(/Download anyway/.test(gate), 'there is no way to proceed');
+    assert(/Go back and add them/.test(gate), 'there is no way back');
+    // Continuing is a legitimate choice and must not be a link hidden under the
+    // fold: both controls are <button> elements sharing the same flex basis.
+    const buttons = gate.match(/<button[\s\S]*?<\/button>/g) ?? [];
+    assert(buttons.length === 2, `${buttons.length} controls in the gate, expected 2`);
+    for (const b of buttons) {
+      assert(/flex-1/.test(b), 'the two choices are not the same width');
+      assert(/py-2\.5/.test(b), 'the two choices are not the same height');
+    }
+  });
+
+  check('it is a gate, not a banner: proceeding is only reachable through it', () => {
+    assert(/fixed inset-0/.test(gate), 'the gate does not cover the page');
+    assert(/role="dialog"/.test(gate) && /aria-modal="true"/.test(gate),
+      'the gate is not announced as a modal');
+  });
+
+  check('the list scrolls inside the panel so both choices stay reachable', () =>
+    assert(/overflow-y-auto/.test(gate),
+      'a seventeen-answer list would push the buttons off screen'));
+
+  check('escape returns to the work and never downloads', () =>
+    assert(/e\.key === 'Escape'\) onGoBack\(\)/.test(gate),
+      'Escape does something other than go back'));
 }
 
 // =====================================================

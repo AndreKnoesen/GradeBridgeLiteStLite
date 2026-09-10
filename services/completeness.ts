@@ -66,14 +66,6 @@ export interface Completeness {
   missing: MissingAnswer[];
 }
 
-/**
- * How many missing answers are named before the message stops listing them.
- *
- * A student with fourteen missing needs the number more than the list, and a
- * dialog nobody can read to the end is a dialog nobody reads.
- */
-export const MISSING_NAMES_SHOWN = 6;
-
 /** The crop fields this check needs. Structural, so `CropRef` satisfies it. */
 export interface CroppedEntry {
   regionId: string;
@@ -111,44 +103,75 @@ export const submissionCompleteness = (
   return { expected: rows.length, present: rows.length - missing.length, missing };
 };
 
-/** `1(a), 1(b) and 3` — an Oxford-less list, because it is read aloud in a dialog. */
-const nameList = (names: string[]): string =>
-  names.length <= 1
-    ? (names[0] ?? '')
-    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+/** The missing answers on one sheet, in assignment order. */
+export interface MissingPageGroup {
+  pageK: number;
+  /** `part_id` — what the printed sheet calls each answer. */
+  names: string[];
+}
 
 /**
- * The missing answers as `1(b) and 1(c) on page 3, 2(a) on page 5`.
+ * Grouped by the sheet they are on, pages in assignment order.
  *
- * **Every name is followed by the page it is on.** A student acts on paper:
- * `1(b)` alone sends them looking through sixteen sheets, `1(b) on page 3`
- * sends them to a sheet. Grouping by page is what keeps that from becoming
- * unreadable when six answers share one sheet.
+ * **Every name is rendered under the page it is on.** A student acts on paper:
+ * `1(b)` alone sends them looking through sixteen sheets, `1(b)` under a
+ * "Page 3" heading sends them to a sheet. Grouping is also what keeps six
+ * answers on one sheet from reading as six separate errands.
  */
-export const missingByPage = (missing: readonly MissingAnswer[]): string => {
-  const pages: number[] = [];
+export const groupMissingByPage = (missing: readonly MissingAnswer[]): MissingPageGroup[] => {
+  const order: number[] = [];
   const byPage = new Map<number, string[]>();
   for (const m of missing) {
-    if (!byPage.has(m.pageK)) { byPage.set(m.pageK, []); pages.push(m.pageK); }
+    if (!byPage.has(m.pageK)) { byPage.set(m.pageK, []); order.push(m.pageK); }
     byPage.get(m.pageK)!.push(m.partId || m.regionId);
   }
-  return pages.map(k => `${nameList(byPage.get(k)!)} on page ${k}`).join(', ');
+  return order.map(pageK => ({ pageK, names: byPage.get(pageK)! }));
 };
 
 /**
- * What to put in front of the student, or null when there is nothing to say.
+ * What the gate puts in front of the student, or null when there is nothing
+ * to say.
+ *
+ * **Structured rather than a single string, and that is the point.** This was
+ * a `window.confirm` message until 2026-09-09. A suppressed `confirm` returns
+ * `false` immediately without showing anything, the handler read `false` as
+ * "cancel", and a student whose browser had begun ignoring dialogs could tap
+ * Download and get nothing at all — for the life of the page, on the one path
+ * where the failure is a zero rather than an annoyance. See the standing rule
+ * in `CLAUDE.md`: **a guard on a constructive action must fail open.**
+ *
+ * So the choice is rendered in the page, where nothing can suppress it and
+ * nothing can answer it on the student's behalf. Three things that bought:
+ *
+ *   - **No default-activated control.** In a `confirm`, OK is the default and
+ *     Enter downloads an incomplete submission. The gate focuses its heading
+ *     and nothing is one keystroke away.
+ *   - **No cap on the list.** The dialog named six answers and said "and 8
+ *     more" because a dialog nobody can read to the end is a dialog nobody
+ *     reads. A panel scrolls, so all seventeen can simply be there.
+ *   - **The prose stops naming browser buttons.** "choose OK" became "you can
+ *     download anyway", which is true wherever it renders.
  *
  * **Null on a complete submission is a requirement, not an optimisation.** The
- * common path gets no congratulation and no extra click; a dialog that always
- * appears is a dialog that is always dismissed, and this one has to be read on
- * the one occasion it differs.
+ * common path gets no gate, no congratulation and no extra tap.
  */
-export const completenessMessage = (c: Completeness): string | null => {
+export interface CompletenessNotice {
+  /** The counts, as one sentence. */
+  headline: string;
+  /** False when nothing was captured at all — then `groups` is empty by design. */
+  itemised: boolean;
+  groups: MissingPageGroup[];
+  /** The sentence that says downloading anyway is a legitimate choice. */
+  choice: string;
+}
+
+export const completenessNotice = (c: Completeness): CompletenessNotice | null => {
   if (c.missing.length === 0) return null;
 
   const answers = (n: number): string => `${n} ${n === 1 ? 'answer' : 'answers'}`;
 
-  // **An empty submission is its own sentence.**
+  // **An empty submission is its own sentence** (Andre, 2026-09-09, having read
+  // the seventeen-missing case on screen).
   //
   // Itemising every part is noise when the answer is "all of them": the list
   // makes a student read seventeen names to learn a fact one line already
@@ -160,24 +183,22 @@ export const completenessMessage = (c: Completeness): string | null => {
   // The list earns its place as soon as the submission is partly there, which
   // is where the names and pages are what the student acts on.
   if (c.present === 0) {
-    return (
-      `This assignment has ${answers(c.expected)}. ` +
-      (c.expected === 1
-        ? 'Your submission does not have it.'
-        : 'Your submission has none of them.') + '\n\n' +
-      `If that is deliberate, choose OK to download it anyway.\n` +
-      `Choose Cancel to go back and add your answers.`
-    );
+    return {
+      headline:
+        `This assignment has ${answers(c.expected)}. ` +
+        (c.expected === 1
+          ? 'Your submission does not have it.'
+          : 'Your submission has none of them.'),
+      itemised: false,
+      groups: [],
+      choice: 'If that is deliberate, you can download it anyway.',
+    };
   }
 
-  const shown = c.missing.slice(0, MISSING_NAMES_SHOWN);
-  const rest = c.missing.length - shown.length;
-  const list = missingByPage(shown) + (rest > 0 ? `, and ${rest} more` : '');
-
-  return (
-    `This assignment has ${answers(c.expected)}. Your submission has ${c.present}.\n\n` +
-    `Missing: ${list}.\n\n` +
-    `If you left those blank on purpose, choose OK to download your submission.\n` +
-    `Choose Cancel to go back and add them.`
-  );
+  return {
+    headline: `This assignment has ${answers(c.expected)}. Your submission has ${c.present}.`,
+    itemised: true,
+    groups: groupMissingByPage(c.missing),
+    choice: 'If you left those blank on purpose, you can download anyway.',
+  };
 };
